@@ -1,0 +1,15 @@
+# Local secrets/config files
+.env
+.env.*
+LapTracker.local.lua
+secrets.local.lua
+
+# Build artifacts
+*.zip
+build/
+dist/
+
+# Editor/system
+.vscode/
+.DS_Store
+Thumbs.db

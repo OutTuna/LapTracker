@@ -1,0 +1,40 @@
+name: Build LapTracker
+
+on:
+  push:
+    branches: ["main", "master"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Block committed webhook secrets
+        run: |
+          if grep -E "script.google.com/macros/s/[A-Za-z0-9_-]+" LapTracker.lua; then
+            echo "Found hardcoded Google Apps Script webhook URL in LapTracker.lua"
+            echo "Use an empty DEFAULT_WEBHOOK_URL in git and keep real URL local."
+            exit 1
+          fi
+
+      - name: Build zip package
+        run: |
+          mkdir -p build/LapTracker
+          cp LapTracker.lua build/LapTracker/
+          cp manifest.ini build/LapTracker/
+          cp icon.png build/LapTracker/
+          if [ -f README.md ]; then cp README.md build/LapTracker/; fi
+          cd build
+          zip -r LapTracker.zip LapTracker
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LapTracker
+          path: build/LapTracker.zip
