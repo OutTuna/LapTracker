@@ -1,42 +1,70 @@
 -- ═══════════════════════════════════════════════════════════════════════════════
--- LapTracker.lua  —  CSP Lua App for Assetto Corsa
--- Tracks lap times of selected players -> sends data to Google Sheets
--- Requires: Custom Shaders Patch (CSP) with web.post support
+-- LapTracker.lua  —  CSP Lua App для Assetto Corsa
+-- Отслеживает время кругов выбранных игроков → отправляет в Google Sheets
+-- Требует: Custom Shaders Patch (CSP) с поддержкой web.post
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 local DEFAULT_WEBHOOK_URL = ''
--- Optional: leave empty to hide the "Open Sheet" button.
--- This keeps the app independent from scripts.google.
+-- Необязательно: можно оставить пустым, тогда кнопка открытия таблицы будет скрыта.
+-- Это делает приложение независимым от файла scripts.google.
 local DEFAULT_SHEET_URL = ''
+local APP_VERSION = 15
 
--- Persistent storage (saved between sessions)
+-- Настройте ссылки на GitHub-репозиторий для проверки обновлений.
+-- UPDATE_VERSION_URL: raw-файл с версией (поддерживается JSON, число или manifest.ini с "VERSION = ...")
+local UPDATE_VERSION_URL = 'https://raw.githubusercontent.com/OutTuna/LapTracker/main/manifest.ini'
+local UPDATE_RELEASES_URL = 'https://github.com/OutTuna/LapTracker/releases'
+local AUTO_OPEN_RELEASES_ON_UPDATE = true
+
+-- Постоянное хранилище (сохраняется между сессиями)
 local store = ac.storage({
-  webhookUrl  = DEFAULT_WEBHOOK_URL,   -- Google Apps Script webhook URL
-  sheetUrl    = DEFAULT_SHEET_URL,     -- Google Sheets URL (optional)
-  appEnabled  = true,                  -- Tracking enabled/disabled
-  playersList = '',   -- comma-separated player list
+  webhookUrl  = DEFAULT_WEBHOOK_URL,   -- URL вебхука Google Apps Script
+  sheetUrl    = DEFAULT_SHEET_URL,     -- URL Google Sheets (опционально)
+  appEnabled  = true,                  -- Вкл/выкл трекинга
+  playersList = '',   -- список игроков через запятую
 })
 
--- App state
-local trackedSet    = {}   -- { [lower(name)] = true }  -- fast lookup
-local trackedList   = {}   -- { "Name1", "Name2", ... } -- display list
+-- Состояние приложения
+local trackedSet    = {}   -- { [lower(name)] = true }  — быстрая проверка
+local trackedList   = {}   -- { "Name1", "Name2", ... } — для отображения
 local prevLapMs     = {}   -- { [carIndex] = lastSeenLapTimeMs }
 local prevConnected = {}   -- { [carIndex] = bool }
-local activityLog   = {}   -- recent event log (max 20)
+local activityLog   = {}   -- лог последних событий (макс. 20)
 local showLog       = false
 local manualInput   = ''
 local sim           = ac.getSim()
+local updateState   = {
+  checked   = false,
+  checking  = false,
+  available = false,
+  latest    = nil,
+  error     = nil,
+}
+local didAutoUpdateCheck = false
+local didAutoOpenReleasePage = false
 
--- Utilities
+-- Утилиты
 
--- Add an entry to the log
+-- Добавить запись в лог
 local function addLog(msg)
   table.insert(activityLog, 1, os.date('%H:%M:%S') .. '  ' .. msg)
   if #activityLog > 20 then table.remove(activityLog) end
   ac.log('[LapTracker] ' .. msg)
 end
 
--- Milliseconds -> "M:SS.mmm"
+    local function normalizeRequestError(errText)
+      local text = tostring(errText or '')
+      local lower = text:lower()
+
+      -- Не показываем пользователю внутренние технические детали CSP (handle), даём понятное сообщение.
+      if lower:find('handle', 1, true) then
+        return 'Временная ошибка сетевого запроса. Повторите попытку через пару секунд.'
+      end
+
+      return text
+    end
+
+-- Миллисекунды → "M:SS.mmm"
 local function msToTime(ms)
   return string.format('%d:%02d.%03d',
     math.floor(ms / 60000),
@@ -44,24 +72,34 @@ local function msToTime(ms)
     ms % 1000)
 end
 
--- Escape special characters for JSON strings
+-- Экранировать спецсимволы для JSON-строки
 local function jsonEscape(s)
   return (s or ''):gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n')
 end
 
--- Normalize URL to a safe string (storage can sometimes contain boolean false)
+-- Привести URL к безопасной строке (в storage иногда попадает boolean false)
 local function normalizeUrl(url)
   if type(url) ~= 'string' then return '' end
   return url:match('^%s*(.-)%s*$')
 end
 
--- Validate URL: web.post accepts only http/https
+-- Проверка URL: web.post принимает только http/https
 local function hasRecognizedProtocol(url)
   local normalized = normalizeUrl(url):lower()
   return normalized:find('^https?://') ~= nil
 end
 
--- Open URL in external browser if available in current CSP version
+local function isGoogleSheetUrl(url)
+  local normalized = normalizeUrl(url):lower()
+  return normalized:find('^https?://docs%.google%.com/spreadsheets/') ~= nil
+end
+
+local function isAppsScriptExecUrl(url)
+  local normalized = normalizeUrl(url):lower()
+  return normalized:find('^https?://script%.google%.com/macros/s/.+/exec') ~= nil
+end
+
+-- Открыть URL во внешнем браузере, если функция доступна в текущей версии CSP
 local function openExternalUrl(url)
   local normalized = normalizeUrl(url)
   if normalized == '' or not hasRecognizedProtocol(normalized) then
@@ -78,20 +116,124 @@ local function openExternalUrl(url)
   end
 
   if opened then
-    addLog('Открыта таблица: ' .. normalized)
+    addLog('Открыт URL: ' .. normalized)
   else
-    addLog('⚠ Не удалось открыть URL таблицы')
+    addLog('⚠ Не удалось открыть URL')
   end
 end
 
--- Normalize stored values on app startup
+-- Вытащить номер версии из строки/JSON, например "16" или {"version":"16"}
+local function parseRemoteVersion(text)
+  if type(text) ~= 'string' then return nil end
+  local fromManifest = text:match('[\r\n]%s*VERSION%s*=%s*([%d%.]+)') or text:match('^%s*VERSION%s*=%s*([%d%.]+)')
+  if fromManifest then
+    local parsedManifest = tonumber(fromManifest)
+    if parsedManifest then return parsedManifest end
+  end
+  local fromJson = text:match('"version"%s*:%s*"?(%d+)"?')
+  if fromJson then return tonumber(fromJson) end
+  local trimmed = text:match('^%s*(.-)%s*$')
+  local fromPlain = trimmed:match('^(%d+)$')
+  if fromPlain then return tonumber(fromPlain) end
+  return nil
+end
+
+local function resetWebhookToDefault(reason)
+  local fallback = normalizeUrl(DEFAULT_WEBHOOK_URL)
+  if fallback == '' or not hasRecognizedProtocol(fallback) then
+    addLog('⚠ DEFAULT_WEBHOOK_URL пуст или некорректен')
+    return false
+  end
+
+  if normalizeUrl(store.webhookUrl) ~= fallback then
+    store.webhookUrl = fallback
+    if reason and reason ~= '' then
+      addLog('Webhook сброшен на DEFAULT_WEBHOOK_URL (' .. reason .. ')')
+    else
+      addLog('Webhook сброшен на DEFAULT_WEBHOOK_URL')
+    end
+  end
+
+  return true
+end
+
+local function checkForUpdates()
+  if updateState.checking then return end
+
+  local versionUrl = normalizeUrl(UPDATE_VERSION_URL)
+  if versionUrl == '' or not hasRecognizedProtocol(versionUrl) then
+    updateState.checked = true
+    updateState.available = false
+    updateState.latest = nil
+    updateState.error = 'URL проверки обновления не настроен'
+    return
+  end
+
+  updateState.checked = false
+  updateState.checking = true
+  updateState.available = false
+  updateState.latest = nil
+  updateState.error = nil
+
+  web.get(versionUrl, function(err, res)
+    updateState.checking = false
+    updateState.checked = true
+
+    local errText = err and tostring(err) or ''
+    if errText ~= '' then
+      updateState.available = false
+      updateState.latest = nil
+      local normalizedErr = normalizeRequestError(errText)
+      updateState.error = normalizedErr
+      addLog('⚠ Ошибка проверки обновления: ' .. normalizedErr)
+      return
+    end
+
+    local statusCode = (type(res) == 'table') and (res.status or res.statusCode) or nil
+    if type(statusCode) == 'number' and (statusCode < 200 or statusCode >= 300) then
+      updateState.available = false
+      updateState.latest = nil
+      updateState.error = 'HTTP ' .. tostring(statusCode)
+      addLog('⚠ Ошибка проверки обновления: HTTP ' .. tostring(statusCode))
+      return
+    end
+
+    local responseBody = (type(res) == 'table') and (res.body or res.response or '') or ''
+    local remoteVersion = parseRemoteVersion(responseBody)
+    if not remoteVersion then
+      updateState.available = false
+      updateState.latest = nil
+      updateState.error = 'Не удалось прочитать версию из ответа GitHub'
+      addLog('⚠ Обновление: некорректный ответ сервера')
+      return
+    end
+
+    updateState.latest = remoteVersion
+    updateState.available = remoteVersion > APP_VERSION
+
+    if updateState.available then
+      addLog('Доступно обновление: v' .. tostring(remoteVersion) .. ' (текущая v' .. tostring(APP_VERSION) .. ')')
+
+      local releasesUrl = normalizeUrl(UPDATE_RELEASES_URL)
+      if AUTO_OPEN_RELEASES_ON_UPDATE and not didAutoOpenReleasePage and releasesUrl ~= '' and hasRecognizedProtocol(releasesUrl) then
+        didAutoOpenReleasePage = true
+        addLog('Автообновление: открываю страницу релиза')
+        openExternalUrl(releasesUrl)
+      end
+    else
+      addLog('Установлена актуальная версия: v' .. tostring(APP_VERSION))
+    end
+  end)
+end
+
+-- Нормализация сохранённого значения при старте приложения
 store.webhookUrl = normalizeUrl(store.webhookUrl)
 local normalizedDefaultWebhook = normalizeUrl(DEFAULT_WEBHOOK_URL)
-if normalizedDefaultWebhook ~= '' then
-  -- Use URL from file as source of truth to avoid stale storage values.
+if store.webhookUrl == '' and normalizedDefaultWebhook ~= '' then
+  -- Заполняем из дефолта только при первом запуске, чтобы обновления кода не затирали локальный ключ.
   store.webhookUrl = normalizedDefaultWebhook
 elseif store.webhookUrl == '' then
-  -- If file default is empty, at least avoid nil/false.
+  -- Если оба значения пустые, хотя бы не оставляем nil/false.
   store.webhookUrl = ''
 end
 
@@ -104,13 +246,17 @@ if type(store.appEnabled) ~= 'boolean' then
   store.appEnabled = true
 end
 
--- Player list management
+if store.appEnabled then
+  resetWebhookToDefault('авто при старте')
+end
+
+-- Управление списком игроков
 
 local function reloadList()
   trackedSet  = {}
   trackedList = {}
   local raw = store.playersList or ''
-  -- Parse comma-separated names
+  -- парсим имена через запятую
   for name in (raw .. ','):gmatch('([^,]*),') do
     name = name:match('^%s*(.-)%s*$') -- trim
     if name ~= '' then
@@ -127,7 +273,7 @@ end
 local function addPlayer(name)
   name = (name or ''):match('^%s*(.-)%s*$')
   if name == '' then return end
-  if trackedSet[name:lower()] then return end  -- already in list
+  if trackedSet[name:lower()] then return end  -- уже есть
   trackedList[#trackedList + 1] = name
   trackedSet[name:lower()]      = true
   saveList()
@@ -140,10 +286,10 @@ local function removePlayer(idx)
   saveList()
 end
 
--- Initial list load
+-- Начальная загрузка списка
 reloadList()
 
--- Send lap to Google Sheets
+-- Отправка круга в Google Sheets
 
 local function sendLap(nickname, carModel, laptime, track)
   local url = normalizeUrl(store.webhookUrl)
@@ -161,16 +307,26 @@ local function sendLap(nickname, carModel, laptime, track)
     return
   end
 
+  if isGoogleSheetUrl(url) then
+    addLog('⚠ Webhook URL указывает на таблицу, нужен URL веб-приложения Apps Script (.../exec)')
+    return
+  end
+
+  if not isAppsScriptExecUrl(url) then
+    addLog('⚠ Проверьте Webhook URL: обычно нужен Apps Script URL формата .../macros/s/.../exec')
+  end
+
   local body = string.format(
-    '{"nickname":"%s","car":"%s","laptime":"%s","track":"%s"}',
+    '{"nickname":"%s","car":"%s","laptime":"%s","track":"%s","appVersion":"%s"}',
     jsonEscape(nickname),
     jsonEscape(carModel),
     jsonEscape(laptime),
-    jsonEscape(track)
+    jsonEscape(track),
+    jsonEscape(tostring(APP_VERSION))
   )
 
-  -- web.post is a built-in CSP Lua function (requires CSP)
-  -- If you get "attempt to call nil", try ac.web.post(...)
+  -- web.post — встроенная функция CSP Lua (требует CSP)
+  -- Если выдаёт ошибку "attempt to call nil", попробуй ac.web.post(...)
   web.post(url, body, function(err, res)
     local errText = err and tostring(err) or ''
     local statusCode = (type(res) == 'table') and (res.status or res.statusCode) or nil
@@ -182,28 +338,38 @@ local function sendLap(nickname, carModel, laptime, track)
     if sent then
       local msg = '✓ ' .. nickname .. '  |  ' .. carModel .. '  |  ' .. laptime .. '  |  отправлено в таблицу'
       addLog(msg)
-      local okToast = pcall(ui.toast, ui.Icons.Confirm, nickname .. '  —  ' .. laptime)
-      if not okToast then
-        -- UI handle can be unavailable in async callbacks; send result is unaffected.
-      end
       return
     end
 
     if errText ~= '' then
-      addLog('✗ ' .. nickname .. ': ' .. errText)
+      addLog('✗ ' .. nickname .. ': ' .. normalizeRequestError(errText))
     else
       local debugStatus = statusCode and tostring(statusCode) or 'n/a'
       local debugBody = (type(responseBody) == 'string' and responseBody ~= '') and responseBody or 'empty'
+      local bodyLower = (type(responseBody) == 'string') and responseBody:lower() or ''
       if #debugBody > 120 then debugBody = debugBody:sub(1, 120) .. '...' end
-      addLog('✗ ' .. nickname .. ': ошибка отправки (status=' .. debugStatus .. ', body=' .. debugBody .. ')')
+
+      if statusCode == 404 then
+        addLog('✗ ' .. nickname .. ': webhook не найден (404). Обновите URL деплоя Apps Script (.../exec)')
+      elseif bodyLower:find('<!doctype html', 1, true) or bodyLower:find('<html', 1, true) then
+        addLog('✗ ' .. nickname .. ': сервер вернул HTML вместо JSON. Проверьте, что Webhook URL ведет на Apps Script /exec')
+      else
+        addLog('✗ ' .. nickname .. ': ошибка отправки (status=' .. debugStatus .. ', body=' .. debugBody .. ')')
+      end
     end
   end)
 end
 
--- Main loop - lap tracking
+-- Основной цикл — отслеживание кругов
 function script.update(dt)
+  if not didAutoUpdateCheck then
+    didAutoUpdateCheck = true
+    checkForUpdates()
+  end
+
   if not store.appEnabled then
-    -- In OFF mode, sync state only so missed laps are not sent retroactively.
+    -- В режиме OFF просто синхронизируем состояние, чтобы после включения
+    -- не отправлять пропущенные круги задним числом.
     for i = 0, sim.carsCount - 1 do
       local car = ac.getCar(i)
       if car and car.isConnected then
@@ -224,7 +390,7 @@ function script.update(dt)
     local car = ac.getCar(i)
     if not car then goto continue end
 
-    -- Slot is empty - reset cached data
+    -- Слот свободен — сбросить данные
     if not car.isConnected then
       prevLapMs[i]     = nil
       prevConnected[i] = false
@@ -233,8 +399,8 @@ function script.update(dt)
 
     local lapMs = car.previousLapTimeMs
 
-    -- First time seeing this car: if a valid lap already exists, send it once.
-    -- This prevents missing the first valid lap in a session.
+    -- Первый раз видим машину: если уже есть валидный круг, отправим его один раз.
+    -- Это устраняет кейс, когда первый круг в игре не попадал в отчёт.
     if not prevConnected[i] then
       prevLapMs[i]     = lapMs
       prevConnected[i] = true
@@ -247,11 +413,11 @@ function script.update(dt)
       goto continue
     end
 
-    -- Lap time changed and is valid -> lap completed
+    -- Время круга изменилось и оно валидное → круг завершён
     if lapMs > 0 and lapMs ~= prevLapMs[i] then
       prevLapMs[i] = lapMs
       local name = ac.getDriverName(i)
-      -- Check if this player is tracked
+      -- Проверяем, отслеживается ли этот игрок
       if trackedSet[name:lower()] then
         sendLap(name, ac.getCarID(i), msToTime(lapMs), track)
       end
@@ -261,12 +427,12 @@ function script.update(dt)
   end
 end
 
--- UI
+-- UI 
 function script.windowMain(dt)
   ui.pushFont(ui.Font.Small)
   local W = ui.availableSpaceX()
 
-  -- Status indicator
+  -- Индикатор статуса
   local currentUrl = normalizeUrl(store.webhookUrl)
   if currentUrl == '' then
     currentUrl = DEFAULT_WEBHOOK_URL
@@ -300,6 +466,7 @@ function script.windowMain(dt)
     ui.pushStyleColor(ui.StyleColor.ButtonActive, rgbm(0.18, 0.52, 0.18, 1))
     if ui.button('ON##toggle', vec2(44, 0)) then
       store.appEnabled = true
+      resetWebhookToDefault('авто при включении')
       addLog('Трекинг включен (ON)')
     end
     ui.popStyleColor(3)
@@ -314,11 +481,50 @@ function script.windowMain(dt)
     ui.textDisabled('Таблица не задана в файле LapTracker.lua')
   end
 
+  ui.offsetCursorY(4)
+  if ui.button(updateState.checking and 'Проверка обновления...' or 'Проверить обновление', vec2(W, 0)) then
+    checkForUpdates()
+  end
+
+  local updateSummary = 'Ваша версия: v' .. tostring(APP_VERSION) .. ' | '
+  if updateState.checking then
+    updateSummary = updateSummary .. 'Идет проверка...'
+  elseif updateState.available then
+    updateSummary = updateSummary .. 'Обновление требуется (v' .. tostring(updateState.latest) .. ')'
+  elseif updateState.checked and not updateState.error then
+    updateSummary = updateSummary .. 'Обновление не требуется'
+  else
+    updateSummary = updateSummary .. 'Не удалось проверить'
+  end
+
+  if updateState.available then
+    ui.pushStyleColor(ui.StyleColor.Text, rgbm(0.95, 0.83, 0.35, 1))
+    ui.text(updateSummary)
+    ui.popStyleColor()
+  elseif updateState.error then
+    ui.pushStyleColor(ui.StyleColor.Text, rgbm(1.0, 0.45, 0.2, 1))
+    ui.text(updateSummary)
+    ui.popStyleColor()
+  else
+    ui.textDisabled(updateSummary)
+  end
+
+  if updateState.available then
+    local releasesUrl = normalizeUrl(UPDATE_RELEASES_URL)
+    if releasesUrl ~= '' and hasRecognizedProtocol(releasesUrl) then
+      if ui.button('Открыть страницу обновления', vec2(W, 0)) then
+        openExternalUrl(releasesUrl)
+      end
+    else
+      ui.textDisabled('Не задан UPDATE_RELEASES_URL')
+    end
+  end
+
   ui.offsetCursorY(6)
   ui.separator()
   ui.offsetCursorY(4)
 
-  -- Players in current session
+  --  Игроки в сессии
   ui.header('Игроки в текущей сессии:')
   local anyInSession = false
 
@@ -330,7 +536,7 @@ function script.windowMain(dt)
       local isTracked = trackedSet[name:lower()]
 
       if isTracked then
-        -- Green - already tracked
+        -- Зелёный — уже отслеживается
         ui.pushStyleColor(ui.StyleColor.Text, rgbm(0.3, 0.9, 0.3, 1))
         ui.text('● ' .. name)
         ui.popStyleColor()
@@ -343,7 +549,7 @@ function script.windowMain(dt)
           end
         end
       else
-        -- Gray - not tracked
+        -- Серый — не отслеживается
         ui.pushStyleColor(ui.StyleColor.Text, rgbm(0.65, 0.65, 0.65, 1))
         ui.text('○ ' .. name)
         ui.popStyleColor()
@@ -363,13 +569,13 @@ function script.windowMain(dt)
   ui.separator()
   ui.offsetCursorY(4)
 
-  -- Tracked list
+  -- Список отслеживаемых
   ui.header('Отслеживаются (' .. #trackedList .. '):')
 
   if #trackedList == 0 then
     ui.textDisabled('  Список пуст — добавьте игроков выше')
   else
-    -- Iterate in reverse so deletion does not break indices
+    -- Перебираем в обратном порядке, чтобы удаление не ломало индексы
     for i = #trackedList, 1, -1 do
       local name = trackedList[i]
       ui.text(name)
@@ -384,7 +590,7 @@ function script.windowMain(dt)
   ui.separator()
   ui.offsetCursorY(4)
 
-  -- Add manually
+  -- Добавить вручную
   ui.header('Добавить игрока вручную:')
   ui.setNextItemWidth(W - 82)
   local manOk, manNew = ui.inputText('##manual', manualInput)
@@ -401,7 +607,7 @@ function script.windowMain(dt)
   ui.separator()
   ui.offsetCursorY(4)
 
-  -- Event log
+  -- Лог событий
   if ui.button((showLog and '▲' or '▼') ..
                '  Лог  (' .. #activityLog .. ')', vec2(W, 0)) then
     showLog = not showLog

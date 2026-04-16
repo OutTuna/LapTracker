@@ -25,6 +25,107 @@ var HUNT_START_COL = 11; // K
 var HUNT_TITLE = 'Best Laps (Leaderboard)';
 var LEADER_BG = '#FFF2A8';
 var DELTA_BG = '#FDE2E2';
+var MAIN_HEADERS = ['Date', 'Recorded At', 'Nickname', 'Car', 'Lap Time', 'Track', 'App Version'];
+
+function openSpreadsheetOrThrow() {
+  var id = String(SPREADSHEET_ID || '').trim();
+  if (!id || id === 'YOUR_SPREADSHEET_ID_HERE') {
+    throw new Error('SPREADSHEET_ID не задан. Укажите ID таблицы из URL между /d/ и /edit.');
+  }
+
+  try {
+    return SpreadsheetApp.openById(id);
+  } catch (err) {
+    throw new Error(
+      'Не удалось открыть таблицу по SPREADSHEET_ID. Проверьте ID и доступ для аккаунта, под которым выполняется Apps Script. ' +
+      'Исходная ошибка: ' + err
+    );
+  }
+}
+
+function writeLapRowOrThrow(data) {
+  var ss = openSpreadsheetOrThrow();
+  var sheet = ss.getSheetByName(SHEET_NAME);
+
+  // Create sheet if it does not exist yet.
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_NAME);
+  }
+
+  // Ensure table header is up-to-date (supports migration from older 6-column layout).
+  ensureMainTableHeader(sheet);
+
+  var now = new Date();
+
+  // Insert latest lap right below the header so newest rows stay on top.
+  sheet.insertRows(2, 1);
+  sheet.getRange(2, 1, 1, 7).setValues([[
+    Utilities.formatDate(now, Session.getScriptTimeZone(), 'dd.MM.yyyy'),
+    Utilities.formatDate(now, Session.getScriptTimeZone(), 'HH:mm:ss'),
+    data.nickname || '',
+    data.car || '',
+    data.laptime || '',
+    data.track || '',
+    data.appVersion || '',
+  ]]);
+
+  // Rebuild best-lap summary grouped by track.
+  rebuildHuntTable(sheet);
+
+  return {
+    spreadsheetUrl: ss.getUrl(),
+    sheetName: sheet.getName(),
+    insertedRow: 2,
+  };
+}
+
+function doGet(e) {
+  try {
+    var ss = openSpreadsheetOrThrow();
+    var sheet = ss.getSheetByName(SHEET_NAME);
+
+    return ContentService
+      .createTextOutput(JSON.stringify({
+        status: 'ok',
+        message: 'LapTracker webhook is alive',
+        spreadsheetId: SPREADSHEET_ID,
+        spreadsheetUrl: ss.getUrl(),
+        sheetExists: !!sheet,
+        sheetName: SHEET_NAME,
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ status: 'error', message: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function ensureMainTableHeader(sheet) {
+  var requiredCols = MAIN_HEADERS.length;
+  var maxCols = sheet.getMaxColumns();
+  if (maxCols < requiredCols) {
+    sheet.insertColumnsAfter(maxCols, requiredCols - maxCols);
+  }
+
+  var current = sheet.getRange(1, 1, 1, requiredCols).getValues()[0];
+  var needHeaderUpdate = false;
+  for (var i = 0; i < requiredCols; i++) {
+    if (String(current[i] || '') !== MAIN_HEADERS[i]) {
+      needHeaderUpdate = true;
+      break;
+    }
+  }
+
+  if (needHeaderUpdate) {
+    sheet.getRange(1, 1, 1, requiredCols).setValues([MAIN_HEADERS]);
+    sheet.getRange(1, 1, 1, requiredCols).setFontWeight('bold');
+  }
+
+  if (sheet.getFrozenRows() < 1) {
+    sheet.setFrozenRows(1);
+  }
+}
 
 function parseLapTimeToMs(lap) {
   if (!lap) return null;
@@ -147,38 +248,19 @@ function rebuildHuntTable(sheet) {
 
 function doPost(e) {
   try {
-    var data = JSON.parse(e.postData.contents);
-
-    var ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
-    var sheet = ss.getSheetByName(SHEET_NAME);
-
-    // Create sheet if it does not exist yet.
-    if (!sheet) {
-      sheet = ss.insertSheet(SHEET_NAME);
-      // Main table header.
-      sheet.appendRow(['Date', 'Recorded At', 'Nickname', 'Car', 'Lap Time', 'Track']);
-      sheet.getRange(1, 1, 1, 6).setFontWeight('bold');
-      sheet.setFrozenRows(1);
+    if (!e || !e.postData || !e.postData.contents) {
+      throw new Error('Пустой POST payload');
     }
 
-    var now = new Date();
-
-    // Insert latest lap right below the header so newest rows stay on top.
-    sheet.insertRows(2, 1);
-    sheet.getRange(2, 1, 1, 6).setValues([[
-      Utilities.formatDate(now, Session.getScriptTimeZone(), 'dd.MM.yyyy'),
-      Utilities.formatDate(now, Session.getScriptTimeZone(), 'HH:mm:ss'),
-      data.nickname  || '',
-      data.car       || '',
-      data.laptime   || '',
-      data.track     || '',
-    ]]);
-
-    // Rebuild best-lap summary grouped by track.
-    rebuildHuntTable(sheet);
+    var data = JSON.parse(e.postData.contents);
+    var writeResult = writeLapRowOrThrow(data);
 
     return ContentService
-      .createTextOutput(JSON.stringify({ status: 'ok' }))
+      .createTextOutput(JSON.stringify({
+        status: 'ok',
+        sheetName: writeResult.sheetName,
+        insertedRow: writeResult.insertedRow,
+      }))
       .setMimeType(ContentService.MimeType.JSON);
 
   } catch (err) {
@@ -190,16 +272,15 @@ function doPost(e) {
 
 // Manual test helper for script editor.
 function testPost() {
-  var fakeEvent = {
-    postData: {
-      contents: JSON.stringify({
-        nickname: 'TestDriver',
-        car:      'ferrari_488_gt3',
-        laptime:  '1:48.234',
-        track:    'monza'
-      })
-    }
-  };
-  var result = doPost(fakeEvent);
-  Logger.log(result.getContent());
+  Logger.log('Running testPost for spreadsheet: ' + SPREADSHEET_ID);
+
+  var writeResult = writeLapRowOrThrow({
+    nickname: 'TestDriver',
+    car: 'ferrari_488_gt3',
+    laptime: '1:48.234',
+    track: 'monza',
+    appVersion: '15',
+  });
+
+  Logger.log('testPost OK. Spreadsheet URL: ' + writeResult.spreadsheetUrl + ', sheet=' + writeResult.sheetName + ', row=' + writeResult.insertedRow);
 }

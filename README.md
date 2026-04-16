@@ -2,6 +2,8 @@
 
 LapTracker is a Lua app for Assetto Corsa (Custom Shaders Patch) that tracks lap times of selected drivers and sends results to Google Sheets through a Google Apps Script webhook.
 
+Current app version: 15
+
 ## Quick Start
 
 1. Copy this folder to `assettocorsa/apps/lua/LapTracker`.
@@ -19,6 +21,7 @@ LapTracker is a Lua app for Assetto Corsa (Custom Shaders Patch) that tracks lap
 - Open target Google Sheet directly from the app UI
 - ON/OFF toggle in the app (quick enable/disable)
 - In-app activity log with send status
+- Sends app version with each lap payload
 
 ## Requirements
 
@@ -60,6 +63,19 @@ Edit these constants in `LapTracker.lua`:
 
 - `DEFAULT_WEBHOOK_URL`: Google Apps Script Web App endpoint
 - `DEFAULT_SHEET_URL`: optional Google Sheets URL for the "Open Sheet" button
+- `UPDATE_VERSION_URL`: raw URL to version file on GitHub (for in-app update check)
+- `UPDATE_RELEASES_URL`: GitHub Releases page URL (for quick open from CSP)
+
+Important behavior:
+- `DEFAULT_WEBHOOK_URL` is used only for initial setup.
+- If `webhookUrl` is already saved in app storage, updates will not overwrite it.
+- This keeps your saved webhook/sheet links after code updates.
+
+In-app update check:
+- App can check GitHub for a newer version directly from CSP UI.
+- Put plain version text in your repo file (example: `16`) and set its raw URL in `UPDATE_VERSION_URL`.
+- If a newer version is detected, app shows it and can open `UPDATE_RELEASES_URL`.
+- Full self-update (download + replace Lua files) is usually restricted in CSP sandbox, so installation remains manual.
 
 ## Usage
 
@@ -78,7 +94,8 @@ The app sends JSON payloads like:
   "nickname": "DriverName",
   "car": "car_id",
   "laptime": "1:48.234",
-  "track": "monza"
+  "track": "monza",
+  "appVersion": "15"
 }
 ```
 
@@ -111,6 +128,7 @@ The webhook script writes lap rows with these columns:
 - `Car`
 - `Lap Time`
 - `Track`
+- `App Version`
 
 It also builds a leaderboard block with best laps per track and deltas to the next driver.
 
@@ -137,6 +155,24 @@ How to use it:
 1. Push your branch to GitHub.
 2. Open Actions tab and run/inspect `Build LapTracker`.
 3. Download the `LapTracker` artifact from the workflow run.
+
+## Auto Update From GitHub (Windows)
+
+You can update the app automatically from GitHub with `Update-LapTracker.ps1`.
+
+How it works:
+- Runs `git fetch` + `git pull --ff-only` on your current branch.
+- Stops if local tracked files have edits (to avoid overwriting your work).
+- Can register a Windows Task Scheduler task that runs on logon.
+
+Run manual update:
+- `powershell -ExecutionPolicy Bypass -File .\Update-LapTracker.ps1`
+
+Install update on every Windows logon:
+- `powershell -ExecutionPolicy Bypass -File .\Update-LapTracker.ps1 -InstallAtLogon`
+
+Note:
+- Your saved webhook/sheet links are stored in app storage and are preserved across updates.
 
 ## Notes
 
