@@ -21,6 +21,7 @@ local store = ac.storage({
   webhookUrl  = DEFAULT_WEBHOOK_URL,   -- URL вебхука Google Apps Script
   sheetUrl    = DEFAULT_SHEET_URL,     -- URL Google Sheets (опционально)
   appEnabled  = true,                  -- Вкл/выкл трекинга
+  appLanguage = 'ru',                  -- Язык интерфейса: ru/en
   playersList = '',   -- список игроков через запятую
 })
 
@@ -43,6 +44,125 @@ local updateState   = {
 local didAutoUpdateCheck = false
 local didAutoOpenReleasePage = false
 
+local I18N = {
+  ru = {
+    ui_status_webhook_ok = '● Webhook задан',
+    ui_status_protocol_bad = '● Некорректный протокол URL',
+    ui_status_webhook_missing = '● Webhook не задан',
+    ui_status_off = '● OFF',
+    ui_btn_lang = 'Язык: %s',
+    ui_btn_open_sheet = 'Открыть таблицу',
+    ui_sheet_not_set = 'Таблица не задана в файле LapTracker.lua',
+    ui_btn_check_update = 'Проверить обновление',
+    ui_btn_checking_update = 'Проверка обновления...',
+    ui_version_prefix = 'Ваша версия: v%s | ',
+    ui_update_checking = 'Идет проверка...',
+    ui_update_required = 'Обновление требуется (v%s)',
+    ui_update_not_required = 'Обновление не требуется',
+    ui_update_failed = 'Не удалось проверить',
+    ui_btn_open_release = 'Открыть страницу обновления',
+    ui_release_url_missing = 'Не задан UPDATE_RELEASES_URL',
+    ui_players_header = 'Игроки в текущей сессии:',
+    ui_btn_remove = 'Убрать',
+    ui_btn_follow = '+ Следить',
+    ui_no_players = '  Нет игроков в сессии',
+    ui_tracked_header = 'Отслеживаются (%d):',
+    ui_tracked_empty = '  Список пуст — добавьте игроков выше',
+    ui_manual_add_header = 'Добавить игрока вручную:',
+    ui_btn_add = 'Добавить',
+    ui_log_header = '  Лог  (%d)',
+    ui_log_empty = '  Пусто',
+    log_bad_sheet_url = '⚠ Некорректный URL таблицы',
+    log_url_opened = 'Открыт URL: %s',
+    log_url_open_fail = '⚠ Не удалось открыть URL',
+    log_handle_error = 'Временная ошибка сетевого запроса. Повторите попытку через пару секунд.',
+    log_default_webhook_bad = '⚠ DEFAULT_WEBHOOK_URL пуст или некорректен',
+    log_webhook_reset_reason = 'Webhook сброшен на DEFAULT_WEBHOOK_URL (%s)',
+    log_webhook_reset = 'Webhook сброшен на DEFAULT_WEBHOOK_URL',
+    log_update_url_missing = 'URL проверки обновления не настроен',
+    log_update_check_error = '⚠ Ошибка проверки обновления: %s',
+    log_update_bad_response = '⚠ Обновление: некорректный ответ сервера',
+    log_update_available = 'Доступно обновление: v%s (текущая v%s)',
+    log_update_actual = 'Установлена актуальная версия: v%s',
+    log_auto_open_release = 'Автообновление: открываю страницу релиза',
+    log_webhook_missing = '⚠ Webhook URL не задан — круг не отправлен',
+    log_protocol_error = '⚠ Некорректный протокол URL',
+    log_webhook_is_sheet = '⚠ Webhook URL указывает на таблицу, нужен URL веб-приложения Apps Script (.../exec)',
+    log_webhook_format_hint = '⚠ Проверьте Webhook URL: обычно нужен Apps Script URL формата .../macros/s/.../exec',
+    log_sent = '✓ %s  |  %s  |  %s  |  отправлено в таблицу',
+    log_send_404 = '✗ %s: webhook не найден (404). Обновите URL деплоя Apps Script (.../exec)',
+    log_send_html = '✗ %s: сервер вернул HTML вместо JSON. Проверьте, что Webhook URL ведет на Apps Script /exec',
+    log_send_error = '✗ %s: ошибка отправки (status=%s, body=%s)',
+    log_tracking_off = 'Трекинг выключен (OFF)',
+    log_tracking_on = 'Трекинг включен (ON)',
+  },
+  en = {
+    ui_status_webhook_ok = '● Webhook configured',
+    ui_status_protocol_bad = '● Invalid URL protocol',
+    ui_status_webhook_missing = '● Webhook is missing',
+    ui_status_off = '● OFF',
+    ui_btn_lang = 'Language: %s',
+    ui_btn_open_sheet = 'Open Sheet',
+    ui_sheet_not_set = 'Sheet URL is not set in LapTracker.lua',
+    ui_btn_check_update = 'Check for Updates',
+    ui_btn_checking_update = 'Checking for updates...',
+    ui_version_prefix = 'Your version: v%s | ',
+    ui_update_checking = 'Checking...',
+    ui_update_required = 'Update required (v%s)',
+    ui_update_not_required = 'No update required',
+    ui_update_failed = 'Check failed',
+    ui_btn_open_release = 'Open Update Page',
+    ui_release_url_missing = 'UPDATE_RELEASES_URL is not set',
+    ui_players_header = 'Players in current session:',
+    ui_btn_remove = 'Remove',
+    ui_btn_follow = '+ Follow',
+    ui_no_players = '  No players in session',
+    ui_tracked_header = 'Tracked (%d):',
+    ui_tracked_empty = '  List is empty — add players above',
+    ui_manual_add_header = 'Add player manually:',
+    ui_btn_add = 'Add',
+    ui_log_header = '  Log  (%d)',
+    ui_log_empty = '  Empty',
+    log_bad_sheet_url = '⚠ Invalid sheet URL',
+    log_url_opened = 'Opened URL: %s',
+    log_url_open_fail = '⚠ Failed to open URL',
+    log_handle_error = 'Temporary network request error. Please retry in a few seconds.',
+    log_default_webhook_bad = '⚠ DEFAULT_WEBHOOK_URL is empty or invalid',
+    log_webhook_reset_reason = 'Webhook reset to DEFAULT_WEBHOOK_URL (%s)',
+    log_webhook_reset = 'Webhook reset to DEFAULT_WEBHOOK_URL',
+    log_update_url_missing = 'Update check URL is not configured',
+    log_update_check_error = '⚠ Update check error: %s',
+    log_update_bad_response = '⚠ Update check: invalid server response',
+    log_update_available = 'Update available: v%s (current v%s)',
+    log_update_actual = 'Current version is up to date: v%s',
+    log_auto_open_release = 'Auto-update: opening release page',
+    log_webhook_missing = '⚠ Webhook URL is not set — lap was not sent',
+    log_protocol_error = '⚠ The URL does not use a recognized protocol',
+    log_webhook_is_sheet = '⚠ Webhook URL points to a sheet, expected Apps Script Web App URL (.../exec)',
+    log_webhook_format_hint = '⚠ Check Webhook URL: expected Apps Script format .../macros/s/.../exec',
+    log_sent = '✓ %s  |  %s  |  %s  |  sent to sheet',
+    log_send_404 = '✗ %s: webhook not found (404). Update Apps Script deployment URL (.../exec)',
+    log_send_html = '✗ %s: server returned HTML instead of JSON. Check that Webhook URL points to Apps Script /exec',
+    log_send_error = '✗ %s: send error (status=%s, body=%s)',
+    log_tracking_off = 'Tracking disabled (OFF)',
+    log_tracking_on = 'Tracking enabled (ON)',
+  }
+}
+
+local function lang()
+  return store.appLanguage == 'en' and 'en' or 'ru'
+end
+
+local function tr(key)
+  local v = I18N[lang()][key]
+  if v == nil then return key end
+  return v
+end
+
+local function trf(key, ...)
+  return string.format(tr(key), ...)
+end
+
 -- Утилиты
 
 -- Добавить запись в лог
@@ -52,17 +172,16 @@ local function addLog(msg)
   ac.log('[LapTracker] ' .. msg)
 end
 
-    local function normalizeRequestError(errText)
-      local text = tostring(errText or '')
-      local lower = text:lower()
+local function normalizeRequestError(errText)
+  local text = tostring(errText or '')
+  local lower = text:lower()
 
-      -- Не показываем пользователю внутренние технические детали CSP (handle), даём понятное сообщение.
-      if lower:find('handle', 1, true) then
-        return 'Временная ошибка сетевого запроса. Повторите попытку через пару секунд.'
-      end
+  if lower:find('handle', 1, true) then
+    return tr('log_handle_error')
+  end
 
-      return text
-    end
+  return text
+end
 
 -- Миллисекунды → "M:SS.mmm"
 local function msToTime(ms)
@@ -103,7 +222,7 @@ end
 local function openExternalUrl(url)
   local normalized = normalizeUrl(url)
   if normalized == '' or not hasRecognizedProtocol(normalized) then
-    addLog('⚠ Некорректный URL таблицы')
+    addLog(tr('log_bad_sheet_url'))
     return
   end
 
@@ -116,9 +235,9 @@ local function openExternalUrl(url)
   end
 
   if opened then
-    addLog('Открыт URL: ' .. normalized)
+    addLog(trf('log_url_opened', normalized))
   else
-    addLog('⚠ Не удалось открыть URL')
+    addLog(tr('log_url_open_fail'))
   end
 end
 
@@ -141,16 +260,16 @@ end
 local function resetWebhookToDefault(reason)
   local fallback = normalizeUrl(DEFAULT_WEBHOOK_URL)
   if fallback == '' or not hasRecognizedProtocol(fallback) then
-    addLog('⚠ DEFAULT_WEBHOOK_URL пуст или некорректен')
+    addLog(tr('log_default_webhook_bad'))
     return false
   end
 
   if normalizeUrl(store.webhookUrl) ~= fallback then
     store.webhookUrl = fallback
     if reason and reason ~= '' then
-      addLog('Webhook сброшен на DEFAULT_WEBHOOK_URL (' .. reason .. ')')
+      addLog(trf('log_webhook_reset_reason', reason))
     else
-      addLog('Webhook сброшен на DEFAULT_WEBHOOK_URL')
+      addLog(tr('log_webhook_reset'))
     end
   end
 
@@ -165,7 +284,7 @@ local function checkForUpdates()
     updateState.checked = true
     updateState.available = false
     updateState.latest = nil
-    updateState.error = 'URL проверки обновления не настроен'
+    updateState.error = tr('log_update_url_missing')
     return
   end
 
@@ -185,7 +304,7 @@ local function checkForUpdates()
       updateState.latest = nil
       local normalizedErr = normalizeRequestError(errText)
       updateState.error = normalizedErr
-      addLog('⚠ Ошибка проверки обновления: ' .. normalizedErr)
+      addLog(trf('log_update_check_error', normalizedErr))
       return
     end
 
@@ -194,7 +313,7 @@ local function checkForUpdates()
       updateState.available = false
       updateState.latest = nil
       updateState.error = 'HTTP ' .. tostring(statusCode)
-      addLog('⚠ Ошибка проверки обновления: HTTP ' .. tostring(statusCode))
+      addLog(trf('log_update_check_error', 'HTTP ' .. tostring(statusCode)))
       return
     end
 
@@ -203,8 +322,8 @@ local function checkForUpdates()
     if not remoteVersion then
       updateState.available = false
       updateState.latest = nil
-      updateState.error = 'Не удалось прочитать версию из ответа GitHub'
-      addLog('⚠ Обновление: некорректный ответ сервера')
+      updateState.error = tr('log_update_bad_response')
+      addLog(tr('log_update_bad_response'))
       return
     end
 
@@ -212,16 +331,16 @@ local function checkForUpdates()
     updateState.available = remoteVersion > APP_VERSION
 
     if updateState.available then
-      addLog('Доступно обновление: v' .. tostring(remoteVersion) .. ' (текущая v' .. tostring(APP_VERSION) .. ')')
+      addLog(trf('log_update_available', tostring(remoteVersion), tostring(APP_VERSION)))
 
       local releasesUrl = normalizeUrl(UPDATE_RELEASES_URL)
       if AUTO_OPEN_RELEASES_ON_UPDATE and not didAutoOpenReleasePage and releasesUrl ~= '' and hasRecognizedProtocol(releasesUrl) then
         didAutoOpenReleasePage = true
-        addLog('Автообновление: открываю страницу релиза')
+        addLog(tr('log_auto_open_release'))
         openExternalUrl(releasesUrl)
       end
     else
-      addLog('Установлена актуальная версия: v' .. tostring(APP_VERSION))
+      addLog(trf('log_update_actual', tostring(APP_VERSION)))
     end
   end)
 end
@@ -244,6 +363,10 @@ end
 
 if type(store.appEnabled) ~= 'boolean' then
   store.appEnabled = true
+end
+
+if store.appLanguage ~= 'ru' and store.appLanguage ~= 'en' then
+  store.appLanguage = 'ru'
 end
 
 if store.appEnabled then
@@ -298,22 +421,22 @@ local function sendLap(nickname, carModel, laptime, track)
     store.webhookUrl = url
   end
   if url == '' then
-    addLog('⚠ Webhook URL не задан — круг не отправлен')
+    addLog(tr('log_webhook_missing'))
     return
   end
 
   if not hasRecognizedProtocol(url) then
-    addLog('⚠ The URL does not use a recognized protocol')
+    addLog(tr('log_protocol_error'))
     return
   end
 
   if isGoogleSheetUrl(url) then
-    addLog('⚠ Webhook URL указывает на таблицу, нужен URL веб-приложения Apps Script (.../exec)')
+    addLog(tr('log_webhook_is_sheet'))
     return
   end
 
   if not isAppsScriptExecUrl(url) then
-    addLog('⚠ Проверьте Webhook URL: обычно нужен Apps Script URL формата .../macros/s/.../exec')
+    addLog(tr('log_webhook_format_hint'))
   end
 
   local body = string.format(
@@ -336,7 +459,7 @@ local function sendLap(nickname, carModel, laptime, track)
     local sent = hasOkBody or isHttpOk
 
     if sent then
-      local msg = '✓ ' .. nickname .. '  |  ' .. carModel .. '  |  ' .. laptime .. '  |  отправлено в таблицу'
+      local msg = trf('log_sent', nickname, carModel, laptime)
       addLog(msg)
       return
     end
@@ -350,11 +473,11 @@ local function sendLap(nickname, carModel, laptime, track)
       if #debugBody > 120 then debugBody = debugBody:sub(1, 120) .. '...' end
 
       if statusCode == 404 then
-        addLog('✗ ' .. nickname .. ': webhook не найден (404). Обновите URL деплоя Apps Script (.../exec)')
+        addLog(trf('log_send_404', nickname))
       elseif bodyLower:find('<!doctype html', 1, true) or bodyLower:find('<html', 1, true) then
-        addLog('✗ ' .. nickname .. ': сервер вернул HTML вместо JSON. Проверьте, что Webhook URL ведет на Apps Script /exec')
+        addLog(trf('log_send_html', nickname))
       else
-        addLog('✗ ' .. nickname .. ': ошибка отправки (status=' .. debugStatus .. ', body=' .. debugBody .. ')')
+        addLog(trf('log_send_error', nickname, debugStatus, debugBody))
       end
     end
   end)
@@ -440,9 +563,9 @@ function script.windowMain(dt)
   end
   local hasUrl = currentUrl ~= ''
   local hasValidProtocol = hasRecognizedProtocol(currentUrl)
-  local statusText = hasUrl and (hasValidProtocol and '● Webhook задан' or '● The URL does not use a recognized protocol') or '● Webhook не задан'
+  local statusText = hasUrl and (hasValidProtocol and tr('ui_status_webhook_ok') or tr('ui_status_protocol_bad')) or tr('ui_status_webhook_missing')
   if not store.appEnabled then
-    statusText = '● OFF'
+    statusText = tr('ui_status_off')
   end
 
   ui.pushStyleColor(ui.StyleColor.Text,
@@ -457,7 +580,7 @@ function script.windowMain(dt)
     ui.pushStyleColor(ui.StyleColor.ButtonActive, rgbm(0.65, 0.18, 0.18, 1))
     if ui.button('OFF##toggle', vec2(44, 0)) then
       store.appEnabled = false
-      addLog('Трекинг выключен (OFF)')
+      addLog(tr('log_tracking_off'))
     end
     ui.popStyleColor(3)
   else
@@ -467,34 +590,38 @@ function script.windowMain(dt)
     if ui.button('ON##toggle', vec2(44, 0)) then
       store.appEnabled = true
       resetWebhookToDefault('авто при включении')
-      addLog('Трекинг включен (ON)')
+      addLog(tr('log_tracking_on'))
     end
     ui.popStyleColor(3)
   end
 
+  if ui.button(trf('ui_btn_lang', string.upper(lang())), vec2(W, 0)) then
+    store.appLanguage = (lang() == 'ru') and 'en' or 'ru'
+  end
+
   local currentSheetUrl = normalizeUrl(store.sheetUrl)
   if currentSheetUrl ~= '' and hasRecognizedProtocol(currentSheetUrl) then
-    if ui.button('Открыть таблицу', vec2(W, 0)) then
+    if ui.button(tr('ui_btn_open_sheet'), vec2(W, 0)) then
       openExternalUrl(currentSheetUrl)
     end
   else
-    ui.textDisabled('Таблица не задана в файле LapTracker.lua')
+    ui.textDisabled(tr('ui_sheet_not_set'))
   end
 
   ui.offsetCursorY(4)
-  if ui.button(updateState.checking and 'Проверка обновления...' or 'Проверить обновление', vec2(W, 0)) then
+  if ui.button(updateState.checking and tr('ui_btn_checking_update') or tr('ui_btn_check_update'), vec2(W, 0)) then
     checkForUpdates()
   end
 
-  local updateSummary = 'Ваша версия: v' .. tostring(APP_VERSION) .. ' | '
+  local updateSummary = trf('ui_version_prefix', tostring(APP_VERSION))
   if updateState.checking then
-    updateSummary = updateSummary .. 'Идет проверка...'
+    updateSummary = updateSummary .. tr('ui_update_checking')
   elseif updateState.available then
-    updateSummary = updateSummary .. 'Обновление требуется (v' .. tostring(updateState.latest) .. ')'
+    updateSummary = updateSummary .. trf('ui_update_required', tostring(updateState.latest))
   elseif updateState.checked and not updateState.error then
-    updateSummary = updateSummary .. 'Обновление не требуется'
+    updateSummary = updateSummary .. tr('ui_update_not_required')
   else
-    updateSummary = updateSummary .. 'Не удалось проверить'
+    updateSummary = updateSummary .. tr('ui_update_failed')
   end
 
   if updateState.available then
@@ -512,11 +639,11 @@ function script.windowMain(dt)
   if updateState.available then
     local releasesUrl = normalizeUrl(UPDATE_RELEASES_URL)
     if releasesUrl ~= '' and hasRecognizedProtocol(releasesUrl) then
-      if ui.button('Открыть страницу обновления', vec2(W, 0)) then
+      if ui.button(tr('ui_btn_open_release'), vec2(W, 0)) then
         openExternalUrl(releasesUrl)
       end
     else
-      ui.textDisabled('Не задан UPDATE_RELEASES_URL')
+      ui.textDisabled(tr('ui_release_url_missing'))
     end
   end
 
@@ -525,7 +652,7 @@ function script.windowMain(dt)
   ui.offsetCursorY(4)
 
   --  Игроки в сессии
-  ui.header('Игроки в текущей сессии:')
+  ui.header(tr('ui_players_header'))
   local anyInSession = false
 
   for i = 0, sim.carsCount - 1 do
@@ -541,7 +668,7 @@ function script.windowMain(dt)
         ui.text('● ' .. name)
         ui.popStyleColor()
         ui.sameLine(W - 58)
-        if ui.button('Убрать##r' .. i) then
+        if ui.button(tr('ui_btn_remove') .. '##r' .. i) then
           for j = #trackedList, 1, -1 do
             if trackedList[j]:lower() == name:lower() then
               removePlayer(j); break
@@ -554,7 +681,7 @@ function script.windowMain(dt)
         ui.text('○ ' .. name)
         ui.popStyleColor()
         ui.sameLine(W - 72)
-        if ui.button('+ Следить##a' .. i) then
+        if ui.button(tr('ui_btn_follow') .. '##a' .. i) then
           addPlayer(name)
         end
       end
@@ -562,7 +689,7 @@ function script.windowMain(dt)
   end
 
   if not anyInSession then
-    ui.textDisabled('  Нет игроков в сессии')
+    ui.textDisabled(tr('ui_no_players'))
   end
 
   ui.offsetCursorY(6)
@@ -570,10 +697,10 @@ function script.windowMain(dt)
   ui.offsetCursorY(4)
 
   -- Список отслеживаемых
-  ui.header('Отслеживаются (' .. #trackedList .. '):')
+  ui.header(trf('ui_tracked_header', #trackedList))
 
   if #trackedList == 0 then
-    ui.textDisabled('  Список пуст — добавьте игроков выше')
+    ui.textDisabled(tr('ui_tracked_empty'))
   else
     -- Перебираем в обратном порядке, чтобы удаление не ломало индексы
     for i = #trackedList, 1, -1 do
@@ -591,12 +718,12 @@ function script.windowMain(dt)
   ui.offsetCursorY(4)
 
   -- Добавить вручную
-  ui.header('Добавить игрока вручную:')
+  ui.header(tr('ui_manual_add_header'))
   ui.setNextItemWidth(W - 82)
   local manOk, manNew = ui.inputText('##manual', manualInput)
   if manOk then manualInput = manNew end
   ui.sameLine(0, 4)
-  if ui.button('Добавить') then
+  if ui.button(tr('ui_btn_add')) then
     if manualInput ~= '' then
       addPlayer(manualInput)
       manualInput = ''
@@ -608,15 +735,14 @@ function script.windowMain(dt)
   ui.offsetCursorY(4)
 
   -- Лог событий
-  if ui.button((showLog and '▲' or '▼') ..
-               '  Лог  (' .. #activityLog .. ')', vec2(W, 0)) then
+  if ui.button((showLog and '▲' or '▼') .. trf('ui_log_header', #activityLog), vec2(W, 0)) then
     showLog = not showLog
   end
 
   if showLog then
     ui.offsetCursorY(2)
     if #activityLog == 0 then
-      ui.textDisabled('  Пусто')
+      ui.textDisabled(tr('ui_log_empty'))
     else
       ui.pushStyleColor(ui.StyleColor.Text, rgbm(0.65, 0.65, 0.65, 1))
       for _, line in ipairs(activityLog) do
