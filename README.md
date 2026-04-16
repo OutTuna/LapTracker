@@ -7,8 +7,10 @@ LapTracker is a Lua app for Assetto Corsa (Custom Shaders Patch) that tracks lap
 1. Copy this folder to `assettocorsa/apps/lua/LapTracker`.
 2. Open `LapTracker.lua` and set `DEFAULT_WEBHOOK_URL` to your current Apps Script Web App URL (`.../exec`).
 3. Optional: set `DEFAULT_SHEET_URL` to your Google Sheet URL.
-4. Start the game, enable the Lua app, add tracked players, keep app state `ON`.
-5. Drive a lap and verify a new row appears in Google Sheets.
+4. Open `scripts.google`, copy it into a new Apps Script project, and deploy it as a Web App.
+5. Use the deployed `/exec` URL in `DEFAULT_WEBHOOK_URL`.
+6. Start the game, enable the Lua app, add tracked players, keep app state `ON`.
+7. Drive a lap and verify a new row appears in Google Sheets.
 
 ## Features
 
@@ -28,7 +30,7 @@ LapTracker is a Lua app for Assetto Corsa (Custom Shaders Patch) that tracks lap
 
 - `LapTracker.lua`: main app logic and UI
 - `manifest.ini`: app window registration and behavior
-- `icon.png`: app icon
+- `scripts.google`: Google Apps Script webhook code
 
 ## Installation
 
@@ -40,12 +42,13 @@ LapTracker is a Lua app for Assetto Corsa (Custom Shaders Patch) that tracks lap
 ## Webhook Setup (Google Apps Script)
 
 1. Create a new Apps Script project at `https://script.google.com`.
-2. Add your `doPost(e)` webhook logic that writes to a Google Sheet.
-3. Deploy as Web App:
+2. Replace project code with contents of `scripts.google`.
+3. Set `SPREADSHEET_ID` to your Google Sheet ID in the script.
+4. Deploy as Web App:
 	- Execute as: `Me`
 	- Access: `Anyone`
-4. Copy the Web App URL that ends with `/exec`.
-5. Paste it into `DEFAULT_WEBHOOK_URL` in `LapTracker.lua`.
+5. Copy the Web App URL that ends with `/exec`.
+6. Paste it into `DEFAULT_WEBHOOK_URL` in `LapTracker.lua`.
 
 Important:
 - If you get HTTP `404`, your deployment URL is invalid/old.
@@ -97,6 +100,19 @@ Use a full URL starting with `https://`.
 - Verify sheet ID/name in Apps Script.
 - Confirm webhook receives POST and parses JSON.
 - Ensure app is `ON` and the driver is in tracked list.
+
+## Google Sheet Output
+
+The webhook script writes lap rows with these columns:
+
+- `Date`
+- `Recorded At`
+- `Nickname`
+- `Car`
+- `Lap Time`
+- `Track`
+
+It also builds a leaderboard block with best laps per track and deltas to the next driver.
 
 ## Security (Do Not Leak Keys)
 
